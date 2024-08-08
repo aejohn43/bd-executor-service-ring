@@ -9,6 +9,10 @@ import com.amazon.ata.executorservice.util.KnownRingDeviceFirmwareVersions;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class ComplianceEnforcer {
     private final CustomerService customerService;
@@ -80,12 +84,25 @@ public class ComplianceEnforcer {
      */
     private List<RingDeviceSystemInfo> getInfoForDevices(List<String> deviceIds) {
         List<RingDeviceSystemInfo> deviceInfo = new ArrayList<>();
+        List<Future<RingDeviceSystemInfo>> futureList = new ArrayList<>();
+        ExecutorService executorService = Executors.newCachedThreadPool();
         for (String deviceId : deviceIds) {
             GetDeviceSystemInfoRequest versionRequest = GetDeviceSystemInfoRequest.builder()
                     .withDeviceId(deviceId)
                     .build();
-            GetDeviceSystemInfoResponse infoResponse = ringClient.getDeviceSystemInfo(versionRequest);
-            deviceInfo.add(infoResponse.getSystemInfo());
+            //GetDeviceSystemInfoResponse infoResponse = ringClient.getDeviceSystemInfo(versionRequest);
+           // deviceInfo.add(infoResponse.getSystemInfo());
+            futureList.add(executorService.submit(() -> ringClient.getDeviceSystemInfo(versionRequest).getSystemInfo()));
+        }
+        executorService.shutdownNow();
+        for(Future<RingDeviceSystemInfo> futureInfo : futureList){
+            try {
+                deviceInfo.add(futureInfo.get());
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } catch (ExecutionException e) {
+                throw new RuntimeException(e);
+            }
         }
         return deviceInfo;
     }
@@ -111,13 +128,28 @@ public class ComplianceEnforcer {
     private List<UpdateDeviceFirmwareResponse> triggerUpdates(List<String> nonCompliantDeviceIds,
                                                               RingDeviceFirmwareVersion latest) {
         List<UpdateDeviceFirmwareResponse> updateStatuses = new ArrayList<>();
+        ExecutorService executorService = Executors.newCachedThreadPool();
+        List<Future<UpdateDeviceFirmwareResponse>> futureList = new ArrayList<>();
         for (String deviceId : nonCompliantDeviceIds) {
             UpdateDeviceFirmwareRequest updateRequest = UpdateDeviceFirmwareRequest.builder()
                     .withDeviceId(deviceId)
                     .withVersion(latest)
                     .build();
-            UpdateDeviceFirmwareResponse updateResponse = ringClient.updateDeviceFirmware(updateRequest);
+            UpdateRingTask task = new UpdateRingTask(ringClient, updateRequest);
+            Future<UpdateDeviceFirmwareResponse> futureResponse = executorService.submit(task);
+            futureList.add(futureResponse);
+            UpdateDeviceFirmwareResponse updateResponse = ringClient.updateDeviceFirmware (updateRequest);
             updateStatuses.add(updateResponse);
+        }
+        executorService.shutdown();
+        for (Future<UpdateDeviceFirmwareResponse> responseFuture : futureList) {
+            try {
+                updateStatuses.add(responseFuture.get());
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            } catch (ExecutionException e) {
+                e.printStackTrace();
+            }
         }
         return updateStatuses;
     }
